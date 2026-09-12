@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "unfork"
+version = "0.0.1"
+description = "Stop forking thirty-two processes. One Python process, the work of many."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+keywords = ["free-threading", "concurrency", "gil", "subinterpreters", "asyncio"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Free Threading",
+  "Topic :: System :: Distributed Computing",
+]
+dependencies = []          # core stays stdlib-only; keep it that way
+
+[project.optional-dependencies]
+queue   = ["saq>=0.18"]
+web     = ["granian>=1.7"]
+jupyter = ["jupyter-client>=8.6"]
+all     = ["unfork[queue,web,jupyter]"]
+dev     = ["pytest>=8", "pytest-timeout>=2.3"]
+
+[project.scripts]
+unfork = "unfork.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/unfork/unfork"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/unfork"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 120
