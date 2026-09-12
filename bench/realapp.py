@@ -265,6 +265,53 @@ def compare(n: int, requests: int, concurrency: int) -> None:
     print()
 
 
+def sweep(max_n: int, requests: int, concurrency: int) -> None:
+    """Vary the worker count. Free-threading charges per thread, so there may be
+    a count where threads still win -- and `shoal serve` should pick that one."""
+    cores, why = usable_cores()
+    key = "peak_pss_kb" if LINUX else "peak_rss_kb"
+    print(f"\n  worker-count sweep   python={sys.version.split()[0]}   "
+          f"cores={cores} ({why})")
+    ft = bool(__import__("sysconfig").get_config_var("Py_GIL_DISABLED"))
+    gil = getattr(sys, "_is_gil_enabled", lambda: True)()
+    print(f"  build: {'free-threaded, GIL off' if ft and not gil else 'GIL build' if not ft else 'free-threaded, GIL ON'}")
+    if not LINUX:
+        print("  !! not Linux: PSS unavailable, numbers are indicative only.")
+    print()
+    print(f"  {'n':>4} {'proc MB':>9} {'thr MB':>9} {'mem':>7} "
+          f"{'proc r/s':>9} {'thr r/s':>9} {'thr/proc':>9}")
+    print("  " + "-" * 62)
+
+    ns, k = [], 1
+    while k <= max_n:
+        ns.append(k)
+        k *= 2
+
+    best = None
+    for k in ns:
+        pr = measure("processes", k, requests, min(concurrency, max(k, 2)))
+        th = measure("threads", k, requests, min(concurrency, max(k, 2)))
+        pm, tm = pr[key] / 1024, th[key] / 1024
+        cut = (1 - tm / pm) * 100 if pm else 0
+        ratio = (th["rps"] / pr["rps"]) if pr["rps"] else 0
+        mark = ""
+        if cut > 0 and ratio >= 0.85 and (best is None or cut > best[1]):
+            best = (k, cut, ratio)
+            mark = "  <-"
+        print(f"  {k:4d} {pm:8.1f} {tm:8.1f} {cut:6.0f}% "
+              f"{pr['rps']:8.0f} {th['rps']:8.0f} {ratio:8.2f}{mark}")
+
+    print()
+    if best:
+        k, cut, ratio = best
+        print(f"  best collapse at n={k}: {cut:.0f}% less memory at {ratio:.2f}x throughput")
+    else:
+        print("  No worker count where threads use less memory at comparable throughput.")
+        print("  Pre-forked processes already share their pages via copy-on-write;")
+        print("  free-threading's per-thread allocator arenas cost more than that saves.")
+    print()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -280,9 +327,16 @@ def main() -> None:
     c.add_argument("--requests", type=int, default=4000)
     c.add_argument("--concurrency", type=int, default=32)
 
+    w = sub.add_parser("sweep", help="find the worker count where threads win, if any")
+    w.add_argument("--max", type=int, default=16)
+    w.add_argument("--requests", type=int, default=2000)
+    w.add_argument("--concurrency", type=int, default=16)
+
     a = ap.parse_args()
     if a.cmd == "run":
         run_server(a.mode, a.n, a.port)
+    elif a.cmd == "sweep":
+        sweep(a.max, a.requests, a.concurrency)
     else:
         compare(a.n, a.requests, a.concurrency)
 
