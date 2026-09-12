@@ -118,6 +118,50 @@ overrides CPython's module-slot logic and keeps the GIL off. It is genuinely
 unsafe in proportion to what the extension does with shared state, so it is
 opt-in, announced loudly at startup, and never chosen for you.
 
+## `shoal measure` -- your number, not ours
+
+```console
+$ shoal measure myproject.wsgi:application
+
+  workers        8
+
+  spawned          132.4 MB   every worker imports for itself
+  preforked         40.1 MB   one import, gc.freeze(), then fork
+
+  YOUR SAVING      92.3 MB (70%)  at 8 workers
+
+  Take it:  shoal serve myproject.wsgi:application
+
+  Measured at rest. Per-request working set does not share and is not counted.
+```
+
+Nothing running is touched. Two throwaway fleets are started from your app's own
+imports, measured, and killed. Measured at rest deliberately: what shares is the
+interpreter and the imported modules, and those are resident the moment import
+finishes.
+
+## `shoal audit` -- what a running deployment is already doing
+
+```console
+$ shoal audit
+
+  server         gunicorn  (master 2436, 4 workers)
+  preload        declared
+  gc.freeze()    NOT set
+
+  memory         55.1 MB actually used (PSS)
+  sharing        69% of resident pages are shared
+
+  DECAYING  preloading, but not calling gc.freeze().
+        The collector writes to the header of every object it visits, so
+        copy-on-write duplicates those pages into each worker and the sharing
+        you preloaded for is gone within minutes.
+```
+
+`DECAYING` is the case no snapshot can catch. Sharing reads 69% and looks
+healthy; it drains over the following minutes. Only reading the config tells you
+that, which is why the audit uses both signals.
+
 ## `shoal serve` -- the saving, without touching your code
 
 ```console

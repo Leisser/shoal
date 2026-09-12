@@ -49,6 +49,21 @@ def _audit(args: argparse.Namespace) -> int:
     return 0 if (a.master and a.preload_declared and a.freeze_declared) else 1
 
 
+def _measure(args: argparse.Namespace) -> int:
+    from .measure import measure, render
+
+    r = measure(args.target, args.workers)
+    if args.json:
+        import dataclasses, json
+        print(json.dumps({**dataclasses.asdict(r),
+                          "saved_kb": r.saved_kb,
+                          "saved_pct": round(r.saved_pct, 1)}, indent=2))
+    else:
+        sys.stdout.write(render(r, args.target,
+                                tty=sys.stdout.isatty() and not args.no_colour))
+    return 1 if r.error else 0
+
+
 def _serve(args: argparse.Namespace) -> int:
     import os
 
@@ -130,6 +145,13 @@ def main(argv: list[str] | None = None) -> int:
     au.add_argument("--json", action="store_true")
     au.add_argument("--no-colour", action="store_true")
     au.set_defaults(func=_audit)
+
+    me = sub.add_parser("measure", help="what preloading is worth for this application")
+    me.add_argument("target", help="module:attribute, e.g. myproject.wsgi:application")
+    me.add_argument("--workers", type=int, default=8)
+    me.add_argument("--json", action="store_true")
+    me.add_argument("--no-colour", action="store_true")
+    me.set_defaults(func=_measure)
 
     srv = sub.add_parser("serve", help="run an app with the right topology for this build")
     srv.add_argument("target", help="module:attribute, e.g. myproject.wsgi:application")

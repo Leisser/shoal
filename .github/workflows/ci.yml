@@ -76,6 +76,23 @@ jobs:
             grep -q "$want" "$label.txt"
           }
 
+          # measure against an application with real imports, and assert it
+          # finds a saving -- the number shoal quotes users must be its own
+          cat > /tmp/heavyapp.py <<'PY'
+          import argparse, ast, base64, csv, dataclasses, datetime, decimal, difflib
+          import email.utils, fractions, gzip, hashlib, hmac, html.parser, http.client
+          import json, logging.config, mimetypes, pickletools, plistlib, pprint
+          import secrets, sqlite3, statistics, tarfile, textwrap, tokenize, typing
+          import unicodedata, unittest, urllib.request, uuid, xml.dom.minidom, zipfile
+          def application(environ, start_response):
+              start_response("200 OK", [("Content-Type", "text/plain")])
+              return [b"ok"]
+          PY
+          echo "--- measure: expect a saving ---"
+          PYTHONPATH=/tmp shoal measure heavyapp:application --workers 8 --no-colour \
+            | tee measured.txt
+          grep -q "YOUR SAVING" measured.txt
+
           check bare 8710 "NOT SHARING"
           check pre  8720 "DECAYING"   --preload
           check good 8730 "GOOD"       --preload -c /tmp/frozen.py
@@ -85,7 +102,7 @@ jobs:
         run: |
           {
             echo "## audit — py${{ matrix.python }}"
-            for f in bare pre good; do
+            for f in measured bare pre good; do
               [ -f "$f.txt" ] && { echo "### $f"; echo '```'; cat "$f.txt"; echo '```'; }
             done
           } >> "$GITHUB_STEP_SUMMARY" || true
