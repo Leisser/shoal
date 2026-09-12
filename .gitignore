@@ -1,7 +1,21 @@
-__pycache__/
-*.py[cod]
+# environments
 .venv/
+venv/
+
+# build artefacts
 dist/
 build/
 *.egg-info/
+
+# caches
+__pycache__/
+*.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# measurement output
+case*.txt
+
+# internal planning — strategy, costings, competitive analysis. Not source.
+planning/
