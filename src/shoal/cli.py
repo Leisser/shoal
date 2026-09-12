@@ -71,7 +71,8 @@ def _serve(args: argparse.Namespace) -> int:
         build = Build(build.version, True, False, build.subinterpreters, build.platform)
         forced = True
 
-    topo = plan(build, cores, kind, args.processes, args.threads)
+    topo = plan(build, cores, kind, args.processes, args.threads,
+                want_shared_state=args.shared_state)
     server = choose_server(kind, topo, args.target, args.host, args.port, args.server)
 
     sys.stdout.write(render_plan(build, cores, why, kind, topo, server, args.target))
@@ -119,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="force a particular server")
     srv.add_argument("--processes", type=int, help="override the process count")
     srv.add_argument("--threads", type=int, help="override the thread count")
+    srv.add_argument("--shared-state", action="store_true",
+                     help="run one process with threads: shared caches and a single "
+                          "connection pool, at higher memory than pre-fork")
     srv.add_argument("--force-gil-off", action="store_true",
                      help="keep the GIL off even if an extension asked for it "
                           "(fast, and unsafe in proportion to what that extension does)")

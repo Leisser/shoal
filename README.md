@@ -1,9 +1,26 @@
 # shoal
 
-**Stop forking thirty-two processes.**
+**Your Python workers are not sharing memory they could be sharing.**
 
-*A shoal is thousands of individuals moving as one body. That is the whole idea:
-one Python process doing the work of the fleet you currently run.*
+A shoal is thousands of individuals moving as one body. Most Python fleets are
+the opposite: N workers, each holding its own private copy of an interpreter and
+every module you import.
+
+Measured on a real application under load, 8 workers, PSS:
+
+| how the workers are started | 3.14 | 3.14t |
+|---|---:|---:|
+| `gunicorn --workers 8` | 132 MB | 233 MB |
+| **`--preload` + `gc.freeze()`** | **40 MB** | **51 MB** |
+
+**70-78% saved**, on any CPython, with no code changes and no dependency audit.
+`shoal serve` does it for you and explains what it chose.
+
+> This project began on a different premise -- that free-threading would collapse
+> a fleet's memory -- and measured its way out of it. Free-threading gives real
+> parallelism, but threads cost *more* memory than pre-forked workers (78 MB
+> against 51 MB at 8 workers). [FINDINGS.md](FINDINGS.md) has the numbers,
+> including the ones that killed the original idea.
 
 A typical Python service runs dozens of near-identical worker processes because
 the GIL left no alternative. Each one duplicates the interpreter, the imports
@@ -101,43 +118,38 @@ overrides CPython's module-slot logic and keeps the GIL off. It is genuinely
 unsafe in proportion to what the extension does with shared state, so it is
 opt-in, announced loudly at startup, and never chosen for you.
 
-## `shoal serve` — the collapse, without touching your code
-
-A WSGI app served as 32 processes and the same app served as 1 process with 32
-threads are the same program. Only the second shares its heap. Which is correct
-depends entirely on whether the GIL is off — so `shoal serve` decides at launch
-rather than leaving it in a deployment script written years ago.
+## `shoal serve` -- the saving, without touching your code
 
 ```console
 $ shoal serve myproject.wsgi:application --dry-run
 
-  interpreter    free-threaded, GIL off - collapse available
-  cores          16 (cgroup v2 quota)
+  interpreter    GIL build - threads share memory but not CPU
+  cores          8 (cgroup v2 quota)
   application    WSGI
-  topology       1 process(es) x 32 thread(s)  = 32 concurrent
-  why            free-threaded, GIL off: one process, 32 threads
-  server         gunicorn - workers/threads map directly onto the topology
-
-  gunicorn --bind 127.0.0.1:8000 --workers 1 --threads 32 myproject.wsgi:application
-```
-
-On a GIL build it falls back to processes and says so plainly, rather than
-quietly serving you a fleet that shares nothing:
-
-```console
+  strategy       preforked + preload
   topology       8 process(es) x 1 thread(s)  = 8 concurrent
-  why            GIL build: threads cannot run in parallel, so processes it is
+  why            pre-fork with preload: shares the interpreter and imports by
+                 copy-on-write, measured 70-78% below spawning workers separately
 
-  NOTE  this is NOT a collapsed fleet: every process holds its own heap.
+  gunicorn --bind 127.0.0.1:8000 --workers 8 --threads 1 --preload \
+           -c /tmp/shoal-xxxx/shoal_gunicorn_conf.py myproject.wsgi:application
 ```
 
-It detects WSGI vs ASGI, picks whichever of gunicorn, granian, uvicorn or
-waitress you have installed, and expresses the topology in that server's own
-flags. ASGI gets one thread per core — its loop already multiplexes I/O — while
-WSGI gets twice that, because it blocks per request.
+The generated config is four lines and is the part most people miss:
 
-Crucially the build is detected **after** importing your app, so a dependency
-that silently re-enables the GIL changes the topology rather than being ignored.
+```python
+def when_ready(server):
+    gc.freeze()      # before the fork, so the collector stops copying pages apart
+```
+
+`--preload` alone is not enough. The collector writes to the header of every
+object it visits, so copy-on-write duplicates those pages into each child and
+the sharing evaporates within minutes. `gc.freeze()` moves everything imported
+so far into a generation the collector never touches.
+
+If you want one heap -- shared caches, a single connection pool -- ask for it
+with `--shared-state`, and shoal will tell you plainly that it costs more memory
+than pre-fork rather than pretending otherwise.
 
 ## Measuring the claim
 
