@@ -1,4 +1,4 @@
-"""`unfork doctor` - can this application collapse, and what is stopping it?
+"""`shoal doctor` - can this application collapse, and what is stopping it?
 
 Answers three questions, in the order that matters:
   1. Is this interpreter capable of the collapse at all?
@@ -66,7 +66,7 @@ def render(d: Diagnosis, *, tty: bool = True) -> str:
     L: list[str] = []
     b = d.build
     L.append("")
-    L.append(f"  {_c('unfork doctor', B, tty)}   python {b.version}   {b.platform}")
+    L.append(f"  {_c('shoal doctor', B, tty)}   python {b.version}   {b.platform}")
     L.append("")
 
     state = b.summary()

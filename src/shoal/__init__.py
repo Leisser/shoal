@@ -1,4 +1,4 @@
-"""unfork - stop forking thirty-two processes.
+"""shoal - stop forking thirty-two processes.
 
 Nothing here yet but the diagnosis. The runtime lands once `doctor` has told us
 what the ecosystem can actually bear.

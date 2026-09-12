@@ -1,23 +1,26 @@
-# unfork
+# shoal
 
 **Stop forking thirty-two processes.**
+
+*A shoal is thousands of individuals moving as one body. That is the whole idea:
+one Python process doing the work of the fleet you currently run.*
 
 A typical Python service runs dozens of near-identical worker processes because
 the GIL left no alternative. Each one duplicates the interpreter, the imports
 and the application. Node count, the cluster that schedules them, and the team
 that runs the cluster all follow from that duplication.
 
-`unfork` collapses it.
+`shoal` collapses it.
 
 ## Status
 
-Pre-alpha. Only `unfork doctor` works today — deliberately, because it answers
+Pre-alpha. Only `shoal doctor` works today — deliberately, because it answers
 the question everything else depends on: *can your application do this at all?*
 
 ```console
-$ unfork doctor
+$ shoal doctor
 
-  unfork doctor   python 3.13.1   darwin
+  shoal doctor   python 3.13.1   darwin
 
   interpreter      GIL build - threads share memory but not CPU; no collapse available
   subinterpreters  available
@@ -82,7 +85,7 @@ publishes both numbers on every push.
 ## Install
 
 ```console
-pip install unfork
+pip install shoal
 ```
 
 Requires Python 3.12+. The full feature set wants free-threaded 3.14.

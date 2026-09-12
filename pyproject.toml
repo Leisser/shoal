@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "unfork"
+name = "shoal"
 version = "0.0.1"
 description = "Stop forking thirty-two processes. One Python process, the work of many."
 readme = "README.md"
@@ -24,17 +24,17 @@ dependencies = []          # core stays stdlib-only; keep it that way
 queue   = ["saq>=0.18"]
 web     = ["granian>=1.7"]
 jupyter = ["jupyter-client>=8.6"]
-all     = ["unfork[queue,web,jupyter]"]
+all     = ["shoal[queue,web,jupyter]"]
 dev     = ["pytest>=8", "pytest-timeout>=2.3"]
 
 [project.scripts]
-unfork = "unfork.cli:main"
+shoal = "shoal.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/unfork/unfork"
+Homepage = "https://github.com/shoal/shoal"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/unfork"]
+packages = ["src/shoal"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

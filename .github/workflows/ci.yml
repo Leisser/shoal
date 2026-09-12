@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # the real matrix is interpreter build, not platform: unfork is pure Python
+        # the real matrix is interpreter build, not platform: shoal is pure Python
         python: ["3.12", "3.13", "3.14", "3.13t", "3.14t"]
     name: test py${{ matrix.python }}
     steps:
@@ -19,7 +19,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q
       - name: doctor smoke test
-        run: unfork doctor --no-colour
+        run: shoal doctor --no-colour
 
   # The thesis is a measurement, so measure it on every push. Case A is memory,
   # Case C is whether that memory saving is usable. Both are needed; neither

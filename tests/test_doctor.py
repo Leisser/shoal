@@ -5,9 +5,9 @@ import sys
 
 import pytest
 
-from unfork import _build
-from unfork.doctor import diagnose, render
-from unfork.probe import ModuleReport, _has_freethreaded_tag, probe
+from shoal import _build
+from shoal.doctor import diagnose, render
+from shoal.probe import ModuleReport, _has_freethreaded_tag, probe
 
 
 # ----------------------------------------------------------------- build facts
@@ -108,7 +108,7 @@ def test_gil_build_never_reports_a_reenable():
 def test_render_is_plain_text_without_a_tty():
     out = render(diagnose(["json"], subinterp=False), tty=False)
     assert "\033[" not in out, "no escape codes when not a tty"
-    assert "unfork doctor" in out
+    assert "shoal doctor" in out
 
 
 def test_render_names_the_blocker():

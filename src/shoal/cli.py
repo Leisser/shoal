@@ -1,4 +1,4 @@
-"""unfork command line."""
+"""shoal command line."""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,7 @@ def _doctor(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="unfork", description=__doc__)
+    p = argparse.ArgumentParser(prog="shoal", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     doc = sub.add_parser("doctor", help="can this application collapse, and what is stopping it")
