@@ -49,8 +49,10 @@ model. Linux only for trustworthy numbers — macOS memory compression makes its
 counters unusable for shared-page accounting, and the harness refuses to report
 there without `--force`.
 
+**Case A — memory.** Does the fleet collapse?
+
 ```console
-$ python bench/collapse.py all --n 32 --imports numpy,django
+$ python bench/collapse.py caseA --n 32 --imports numpy,django
 
   mode           total PSS   per unit      spawn
   processes        224.9 MB    28.11 MB     1.36 ms
@@ -58,6 +60,24 @@ $ python bench/collapse.py all --n 32 --imports numpy,django
   fork              61.2 MB     7.65 MB     0.33 ms   73% less than processes
   subinterp             --          --          --   died on SIGABRT
 ```
+
+**Case C — throughput.** Do those threads actually do any work?
+
+```console
+$ python bench/collapse.py caseC --n 4
+
+  mode            elapsed    speedup   efficiency
+  serial            0.33s      1.00x         100%
+  processes         0.09s      3.69x          92%
+  threads           0.32s      1.01x          25%
+
+  Case C: 1.01x thread speedup  ->  NOT USABLE. Expected on a GIL build.
+```
+
+Case C matters as much as Case A. Memory that collapses while throughput
+collapses with it is worthless — the fleet is smaller and does less. Threads
+share memory on *any* build; only a free-threaded build lets them run. CI
+publishes both numbers on every push.
 
 ## Install
 
