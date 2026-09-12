@@ -154,16 +154,25 @@ def serve_processes(sock: socket.socket, n: int) -> None:
 
 
 def serve_spawned(sock: socket.socket, n: int, port: int) -> None:
-    """n independent interpreters on one port via SO_REUSEPORT.
+    """n independent interpreters sharing one accept queue by fd inheritance.
 
-    This is what `gunicorn --workers N` does *without* --preload, and what most
-    deployments actually run: every worker imports the application for itself and
-    shares nothing with its siblings.
+    This is `gunicorn --workers N` *without* --preload, which is what most
+    deployments run: every worker imports the application for itself and shares
+    no memory with its siblings.
+
+    The listening socket is handed down rather than rebound per child. Rebinding
+    with SO_REUSEPORT would distribute connections by 4-tuple hash, so with
+    single-threaded keep-alive workers two connections can land on one child
+    while another idles, and the queued one blocks until it times out. Sharing
+    the accept queue isolates the variable under test -- memory sharing -- from
+    one we do not care about.
     """
-    sock.close()                      # children rebind it themselves via SO_REUSEPORT
+    fd = sock.fileno()
+    os.set_inheritable(fd, True)
     kids = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "run",
-                              "--mode", "single", "--n", "1", "--port", str(port)],
-                             stdout=subprocess.PIPE, text=True, bufsize=1)
+                              "--mode", "single", "--n", "1", "--fd", str(fd)],
+                             stdout=subprocess.PIPE, text=True, bufsize=1,
+                             pass_fds=(fd,))
             for _ in range(n)]
     for k in kids:                    # do not report ready until every child is
         deadline = time.time() + 60
@@ -181,13 +190,14 @@ def serve_spawned(sock: socket.socket, n: int, port: int) -> None:
         k.wait()
 
 
-def run_server(mode: str, n: int, port: int) -> None:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    if hasattr(socket, "SO_REUSEPORT"):
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    sock.bind(("127.0.0.1", port))
-    sock.listen(512)
+def run_server(mode: str, n: int, port: int, fd: int = -1) -> None:
+    if fd >= 0:                                   # a worker of a spawned fleet
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, fileno=fd)
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
+        sock.listen(512)
     bound = sock.getsockname()[1]
 
     if mode == "single":                       # one worker of a spawned fleet
@@ -213,7 +223,7 @@ def drive(port: int, requests: int, concurrency: int) -> dict:
     per = max(1, requests // concurrency)
 
     def worker(_):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         ok = 0
         for i in range(per):
             conn.request("GET", f"/api/items/{i}")
@@ -388,6 +398,8 @@ def main() -> None:
                    required=True)
     r.add_argument("--n", type=int, default=8)
     r.add_argument("--port", type=int, default=0)
+    r.add_argument("--fd", type=int, default=-1,
+                   help="serve on an inherited listening socket")
 
     c = sub.add_parser("compare", help="serve both ways under identical load")
     c.add_argument("--n", type=int, default=8)
@@ -401,7 +413,7 @@ def main() -> None:
 
     a = ap.parse_args()
     if a.cmd == "run":
-        run_server(a.mode, a.n, a.port)
+        run_server(a.mode, a.n, a.port, a.fd)
     elif a.cmd == "sweep":
         sweep(a.max, a.requests, a.concurrency)
     else:
