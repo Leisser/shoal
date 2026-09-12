@@ -30,6 +30,14 @@ jobs:
       - run: pytest -q
       - name: doctor smoke test
         run: shoal doctor --no-colour
+      - name: serve planner smoke test
+        run: |
+          cat > /tmp/smoke.py <<'PY'
+          def application(environ, start_response): ...
+          async def asgi_app(scope, receive, send): ...
+          PY
+          PYTHONPATH=/tmp shoal serve smoke:application --dry-run
+          PYTHONPATH=/tmp shoal serve smoke:asgi_app --dry-run
 
   # The thesis is a measurement, so measure it on every push. Case A is memory,
   # Case C is whether that memory saving is usable. Neither alone decides anything.

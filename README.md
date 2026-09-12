@@ -45,6 +45,44 @@ The doctor runs every import in an isolated child process and reports
 The same isolation lets it survive dependencies that abort the interpreter
 outright: numpy under a subinterpreter dies on `SIGABRT`, not an exception.
 
+## `shoal serve` — the collapse, without touching your code
+
+A WSGI app served as 32 processes and the same app served as 1 process with 32
+threads are the same program. Only the second shares its heap. Which is correct
+depends entirely on whether the GIL is off — so `shoal serve` decides at launch
+rather than leaving it in a deployment script written years ago.
+
+```console
+$ shoal serve myproject.wsgi:application --dry-run
+
+  interpreter    free-threaded, GIL off - collapse available
+  cores          16 (cgroup v2 quota)
+  application    WSGI
+  topology       1 process(es) x 32 thread(s)  = 32 concurrent
+  why            free-threaded, GIL off: one process, 32 threads
+  server         gunicorn - workers/threads map directly onto the topology
+
+  gunicorn --bind 127.0.0.1:8000 --workers 1 --threads 32 myproject.wsgi:application
+```
+
+On a GIL build it falls back to processes and says so plainly, rather than
+quietly serving you a fleet that shares nothing:
+
+```console
+  topology       8 process(es) x 1 thread(s)  = 8 concurrent
+  why            GIL build: threads cannot run in parallel, so processes it is
+
+  NOTE  this is NOT a collapsed fleet: every process holds its own heap.
+```
+
+It detects WSGI vs ASGI, picks whichever of gunicorn, granian, uvicorn or
+waitress you have installed, and expresses the topology in that server's own
+flags. ASGI gets one thread per core — its loop already multiplexes I/O — while
+WSGI gets twice that, because it blocks per request.
+
+Crucially the build is detected **after** importing your app, so a dependency
+that silently re-enables the GIL changes the topology rather than being ignored.
+
 ## Measuring the claim
 
 `bench/collapse.py` measures PSS across the process tree under each execution
