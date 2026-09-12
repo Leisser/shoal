@@ -41,8 +41,8 @@ jobs:
       - name: gil probe smoke test
         run: shoal gil json --no-colour
 
-      # Audit against a real gunicorn, both ways round. This is the only test
-      # that exercises /proc parsing against a process shoal did not start.
+      # Audit against a real gunicorn, three ways round. The only test that
+      # parses /proc for a process shoal did not start.
       - name: audit a real deployment
         if: runner.os == 'Linux'
         run: |
@@ -59,29 +59,26 @@ jobs:
               gc.freeze()
           PY
 
-          echo "--- without preload: expect NOT SHARING ---"
-          PYTHONPATH=/tmp gunicorn --workers 4 --bind 127.0.0.1:871 wsgiapp:application &
-          sleep 6
-          shoal audit --no-colour | tee bare.txt || true
-          grep -q "NOT SHARING" bare.txt
-          pkill -f 'bind 127.0.0.1:871' || true
-          sleep 2
+          check () {                    # $1 label, $2 port, $3 expected, rest: args
+            local label=$1 port=$2 want=$3; shift 3
+            echo "--- $label: expect $want ---"
+            PYTHONPATH=/tmp gunicorn --workers 4 --bind "127.0.0.1:$port" \
+                     "$@" wsgiapp:application &
+            for _ in $(seq 40); do
+              if curl -sf -o /dev/null "http://127.0.0.1:$port/"; then break; fi
+              sleep 0.5
+            done
+            curl -sf -o /dev/null "http://127.0.0.1:$port/" \
+              || { echo "server never came up on $port"; return 1; }
+            shoal audit --no-colour | tee "$label.txt" || true
+            pkill -f "bind 127.0.0.1:$port" || true
+            sleep 2
+            grep -q "$want" "$label.txt"
+          }
 
-          echo "--- preload without freeze: expect DECAYING ---"
-          PYTHONPATH=/tmp gunicorn --preload --workers 4 --bind 127.0.0.1:872 wsgiapp:application &
-          sleep 6
-          shoal audit --no-colour | tee pre.txt || true
-          grep -q "DECAYING" pre.txt
-          pkill -f 'bind 127.0.0.1:872' || true
-          sleep 2
-
-          echo "--- preload + gc.freeze: expect GOOD ---"
-          PYTHONPATH=/tmp gunicorn --preload -c /tmp/frozen.py --workers 4 \
-                   --bind 127.0.0.1:873 wsgiapp:application &
-          sleep 6
-          shoal audit --no-colour | tee good.txt || true
-          grep -q "GOOD" good.txt
-          pkill -f 'bind 127.0.0.1:873' || true
+          check bare 8710 "NOT SHARING"
+          check pre  8720 "DECAYING"   --preload
+          check good 8730 "GOOD"       --preload -c /tmp/frozen.py
 
       - name: Publish audit results
         if: always() && runner.os == 'Linux'
