@@ -38,6 +38,8 @@ jobs:
           PY
           PYTHONPATH=/tmp shoal serve smoke:application --dry-run
           PYTHONPATH=/tmp shoal serve smoke:asgi_app --dry-run
+      - name: gil probe smoke test
+        run: shoal gil json --no-colour
 
   # The thesis is a measurement, so measure it on every push. Case A is memory,
   # Case C is whether that memory saving is usable. Neither alone decides anything.

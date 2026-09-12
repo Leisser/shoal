@@ -45,6 +45,42 @@ The doctor runs every import in an isolated child process and reports
 The same isolation lets it survive dependencies that abort the interpreter
 outright: numpy under a subinterpreter dies on `SIGABRT`, not an exception.
 
+## `shoal gil` — find what turned it back on, and fix it
+
+Detection alone is diagnosis. When an extension re-enables the GIL there are
+exactly two cures, and `shoal gil` names the culprit and offers both:
+
+```console
+$ shoal gil myproject.wsgi
+
+  GIL RE-ENABLED  importing myproject.wsgi turned the GIL back on.
+  Every thread in this process now runs one at a time.
+
+  blamed by CPython:
+    - psycopg2._psycopg
+
+  Two ways forward.
+
+  1. Replace the dependency -- the real fix.
+       pip index versions psycopg2    # is there a newer build?
+     Compatibility tracker: https://py-free-threading.github.io/tracking/
+
+  2. Override CPython -- keeps the collapse, accepts the risk.
+       PYTHON_GIL=0 shoal serve ...        # or: shoal serve --force-gil-off
+     This runs the extension without the GIL it asked for. Safe only if that
+     extension does not mutate shared state from multiple threads.
+```
+
+CPython names the offending module when it enables the GIL, but the warning
+lands in stderr during startup where nobody reads it, and everything afterwards
+silently runs single-threaded. `shoal gil` imports your app in a child with
+`-X warn_default_gil`, captures that warning, and puts the name in front of you.
+
+`shoal serve --force-gil-off` applies the second cure — `PYTHON_GIL=0`, which
+overrides CPython's module-slot logic and keeps the GIL off. It is genuinely
+unsafe in proportion to what the extension does with shared state, so it is
+opt-in, announced loudly at startup, and never chosen for you.
+
 ## `shoal serve` — the collapse, without touching your code
 
 A WSGI app served as 32 processes and the same app served as 1 process with 32

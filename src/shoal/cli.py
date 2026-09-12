@@ -22,10 +22,24 @@ def _doctor(args: argparse.Namespace) -> int:
     return 0 if d.ready or not d.blockers else 1
 
 
+def _gil(args: argparse.Namespace) -> int:
+    from .gil import inspect_target, render
+
+    report = inspect_target(args.target)
+    if args.json:
+        import dataclasses, json
+        print(json.dumps(dataclasses.asdict(report), indent=2))
+    else:
+        sys.stdout.write(render(report, args.target,
+                                tty=sys.stdout.isatty() and not args.no_colour))
+    return 1 if report.curable else 0
+
+
 def _serve(args: argparse.Namespace) -> int:
     import os
+
     from ._app import AppError, detect_kind, load
-    from ._build import detect
+    from ._build import Build, detect
     from .serve import choose_server, plan, render_plan, usable_cores
 
     try:
@@ -45,16 +59,35 @@ def _serve(args: argparse.Namespace) -> int:
     # the correct topology entirely.
     build = detect()
     cores, why = usable_cores()
+
+    # A free-threaded build whose GIL came back on is recoverable -- but only if
+    # the user has said they accept what overruling the extension costs.
+    forced = False
+    if build.freethreaded and build.gil_on and args.force_gil_off:
+        from .gil import FORCE_VARS
+        os.environ.update(FORCE_VARS)
+        build = Build(build.version, True, False, build.subinterpreters, build.platform)
+        forced = True
+
     topo = plan(build, cores, kind, args.processes, args.threads)
     server = choose_server(kind, topo, args.target, args.host, args.port, args.server)
 
     sys.stdout.write(render_plan(build, cores, why, kind, topo, server, args.target))
+
+    if forced:
+        print("  FORCED  PYTHON_GIL=0 -- an extension asked for the GIL and was overruled.")
+        print(f"          Run `shoal gil {args.target.split(':')[0]}` to see which, "
+              "and test under load.\n")
+    elif build.freethreaded and build.gil_on:
+        print(f"  Run `shoal gil {args.target.split(':')[0]}` to find what re-enabled it,")
+        print("  or --force-gil-off to overrule the extension and keep the collapse.\n")
+
     if args.dry_run:
         return 0
     if not server.argv:
         return 1
     sys.stdout.flush()
-    os.execvp(server.argv[0], server.argv)
+    os.execvpe(server.argv[0], server.argv, os.environ)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,6 +102,12 @@ def main(argv: list[str] | None = None) -> int:
     doc.add_argument("--no-colour", action="store_true")
     doc.set_defaults(func=_doctor)
 
+    g = sub.add_parser("gil", help="find what re-enabled the GIL, and how to fix it")
+    g.add_argument("target", help="module to import, e.g. myproject.wsgi or numpy")
+    g.add_argument("--json", action="store_true")
+    g.add_argument("--no-colour", action="store_true")
+    g.set_defaults(func=_gil)
+
     srv = sub.add_parser("serve", help="run an app with the right topology for this build")
     srv.add_argument("target", help="module:attribute, e.g. myproject.wsgi:application")
     srv.add_argument("--host", default="127.0.0.1")
@@ -78,6 +117,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="force a particular server")
     srv.add_argument("--processes", type=int, help="override the process count")
     srv.add_argument("--threads", type=int, help="override the thread count")
+    srv.add_argument("--force-gil-off", action="store_true",
+                     help="keep the GIL off even if an extension asked for it "
+                          "(fast, and unsafe in proportion to what that extension does)")
     srv.add_argument("-n", "--dry-run", action="store_true",
                      help="print the plan and the command, run nothing")
     srv.set_defaults(func=_serve)
