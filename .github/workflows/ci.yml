@@ -41,6 +41,58 @@ jobs:
       - name: gil probe smoke test
         run: shoal gil json --no-colour
 
+      # Audit against a real gunicorn, both ways round. This is the only test
+      # that exercises /proc parsing against a process shoal did not start.
+      - name: audit a real deployment
+        if: runner.os == 'Linux'
+        run: |
+          pip install gunicorn
+          cat > /tmp/wsgiapp.py <<'PY'
+          import json, decimal, uuid, datetime          # give it something to share
+          def application(environ, start_response):
+              start_response("200 OK", [("Content-Type", "text/plain")])
+              return [b"ok"]
+          PY
+          cat > /tmp/frozen.py <<'PY'
+          import gc
+          def when_ready(server):
+              gc.freeze()
+          PY
+
+          echo "--- without preload: expect NOT SHARING ---"
+          PYTHONPATH=/tmp gunicorn --workers 4 --bind 127.0.0.1:871 wsgiapp:application &
+          sleep 6
+          shoal audit --no-colour | tee bare.txt || true
+          grep -q "NOT SHARING" bare.txt
+          pkill -f 'bind 127.0.0.1:871' || true
+          sleep 2
+
+          echo "--- preload without freeze: expect DECAYING ---"
+          PYTHONPATH=/tmp gunicorn --preload --workers 4 --bind 127.0.0.1:872 wsgiapp:application &
+          sleep 6
+          shoal audit --no-colour | tee pre.txt || true
+          grep -q "DECAYING" pre.txt
+          pkill -f 'bind 127.0.0.1:872' || true
+          sleep 2
+
+          echo "--- preload + gc.freeze: expect GOOD ---"
+          PYTHONPATH=/tmp gunicorn --preload -c /tmp/frozen.py --workers 4 \
+                   --bind 127.0.0.1:873 wsgiapp:application &
+          sleep 6
+          shoal audit --no-colour | tee good.txt || true
+          grep -q "GOOD" good.txt
+          pkill -f 'bind 127.0.0.1:873' || true
+
+      - name: Publish audit results
+        if: always() && runner.os == 'Linux'
+        run: |
+          {
+            echo "## audit — py${{ matrix.python }}"
+            for f in bare pre good; do
+              [ -f "$f.txt" ] && { echo "### $f"; echo '```'; cat "$f.txt"; echo '```'; }
+            done
+          } >> "$GITHUB_STEP_SUMMARY" || true
+
   # The thesis is a measurement, so measure it on every push. Case A is memory,
   # Case C is whether that memory saving is usable. Neither alone decides anything.
   collapse:

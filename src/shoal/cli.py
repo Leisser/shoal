@@ -37,6 +37,18 @@ def _gil(args: argparse.Namespace) -> int:
     return 1 if report.curable else 0
 
 
+def _audit(args: argparse.Namespace) -> int:
+    from .audit import audit_pid, render
+
+    a = audit_pid(args.pid)
+    if args.json:
+        import dataclasses, json
+        print(json.dumps(dataclasses.asdict(a), indent=2, default=str))
+    else:
+        sys.stdout.write(render(a, tty=sys.stdout.isatty() and not args.no_colour))
+    return 0 if (a.master and a.preload_declared and a.freeze_declared) else 1
+
+
 def _serve(args: argparse.Namespace) -> int:
     import os
 
@@ -110,6 +122,14 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--json", action="store_true")
     g.add_argument("--no-colour", action="store_true")
     g.set_defaults(func=_gil)
+
+    au = sub.add_parser("audit", help="is a running deployment sharing memory, "
+                                      "and what is it costing")
+    au.add_argument("--pid", type=int, help="master process to inspect "
+                                            "(default: find one)")
+    au.add_argument("--json", action="store_true")
+    au.add_argument("--no-colour", action="store_true")
+    au.set_defaults(func=_audit)
 
     srv = sub.add_parser("serve", help="run an app with the right topology for this build")
     srv.add_argument("target", help="module:attribute, e.g. myproject.wsgi:application")
