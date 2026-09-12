@@ -130,7 +130,14 @@ def _accept_loop(srv: HTTPServer) -> None:
 
 
 def serve_processes(sock: socket.socket, n: int) -> None:
-    """n processes sharing one listening socket: the pre-fork model, one worker each."""
+    """Pre-fork with preload: import once, freeze, fork. Best case for processes.
+
+    gc.freeze() moves everything imported so far out of the collector's reach, so
+    its mark phase stops writing to those object headers and copy-on-write keeps
+    the pages shared. Without it the children drift apart within minutes.
+    """
+    import gc
+    gc.freeze()
     kids = []
     for _ in range(n):
         pid = os.fork()
@@ -146,12 +153,53 @@ def serve_processes(sock: socket.socket, n: int) -> None:
         os.waitpid(p, 0)
 
 
+def serve_spawned(sock: socket.socket, n: int, port: int) -> None:
+    """n independent interpreters on one port via SO_REUSEPORT.
+
+    This is what `gunicorn --workers N` does *without* --preload, and what most
+    deployments actually run: every worker imports the application for itself and
+    shares nothing with its siblings.
+    """
+    sock.close()                      # children rebind it themselves via SO_REUSEPORT
+    kids = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "run",
+                              "--mode", "single", "--n", "1", "--port", str(port)],
+                             stdout=subprocess.PIPE, text=True, bufsize=1)
+            for _ in range(n)]
+    for k in kids:                    # do not report ready until every child is
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            line = k.stdout.readline()
+            if line.startswith("@@READY@@"):
+                break
+            if k.poll() is not None:
+                raise RuntimeError("spawned worker exited before binding")
+        else:
+            raise TimeoutError("spawned worker never bound")
+    print(f"@@READY@@{port}", flush=True)
+    signal.signal(signal.SIGTERM, lambda *a: [k.kill() for k in kids])
+    for k in kids:
+        k.wait()
+
+
 def run_server(mode: str, n: int, port: int) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.bind(("127.0.0.1", port))
     sock.listen(512)
-    print(f"@@READY@@{sock.getsockname()[1]}", flush=True)
+    bound = sock.getsockname()[1]
+
+    if mode == "single":                       # one worker of a spawned fleet
+        print(f"@@READY@@{bound}", flush=True)
+        _accept_loop(_server_on(sock))
+        return
+
+    if mode == "spawned":
+        serve_spawned(sock, n, bound)   # announces ready once every child is bound
+        return
+
+    print(f"@@READY@@{bound}", flush=True)
     (serve_threads if mode == "threads" else serve_processes)(sock, n)
 
 
@@ -243,17 +291,23 @@ def compare(n: int, requests: int, concurrency: int) -> None:
     print()
 
     key = "peak_pss_kb" if LINUX else "peak_rss_kb"
-    res = {m: measure(m, n, requests, concurrency) for m in ("processes", "threads")}
+    modes = ("spawned", "processes", "threads")
+    res = {m: measure(m, n, requests, concurrency) for m in modes}
 
+    labels = {"spawned": "spawned", "processes": "preforked", "threads": "threads"}
     print(f"  {'topology':<12} {'idle':>10} {'under load':>12} {'req/s':>10}")
     print("  " + "-" * 48)
-    for m in ("processes", "threads"):
+    for m in modes:
         r = res[m]
         idle = r["idle_pss_kb"] if LINUX else r["peak_rss_kb"]
-        print(f"  {m:<12} {idle/1024:8.1f} MB {r[key]/1024:10.1f} MB {r['rps']:9.0f}")
+        print(f"  {labels[m]:<12} {idle/1024:8.1f} MB {r[key]/1024:10.1f} MB {r['rps']:9.0f}")
     print()
 
-    p, t = res["processes"], res["threads"]
+    sp, p, t = res["spawned"], res["processes"], res["threads"]
+    if sp[key]:
+        print(f"  preload+gc.freeze vs spawned: "
+              f"{(1 - p[key]/sp[key])*100:.0f}% less memory "
+              f"({sp[key]/1024:.1f} -> {p[key]/1024:.1f} MB)")
     mem_cut = (1 - t[key] / p[key]) * 100 if p[key] else 0
     thr = (t["rps"] / p["rps"]) if p["rps"] else 0
     print(f"  memory under load: {mem_cut:.0f}% less on threads")
@@ -330,7 +384,8 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("run", help="serve the app in one topology")
-    r.add_argument("--mode", choices=["threads", "processes"], required=True)
+    r.add_argument("--mode", choices=["threads", "processes", "spawned", "single"],
+                   required=True)
     r.add_argument("--n", type=int, default=8)
     r.add_argument("--port", type=int, default=0)
 

@@ -140,20 +140,37 @@ def compare(threads: int, alloc_mb: float) -> None:
               f"{d['retained_mb']:11.1f} {d['per_thread_retained_mb']:12.2f}")
 
     print()
-    if len(rows) > 1:
+    working = [n for n, _ in rows]
+    unsupported = [n for n, _ in CONFIGS if n not in working]
+
+    if len(rows) <= 1:
+        print("  Only one allocator ran. Nothing to compare.")
+    else:
         base = next((d for n, d in rows if n == "default"), rows[0][1])
         best_name, best = min(rows, key=lambda r: r[1]["per_thread_retained_mb"])
         cut = base["per_thread_retained_mb"] - best["per_thread_retained_mb"]
-        if best_name != "default" and cut > 0.5:
-            print(f"  TUNABLE -- '{best_name}' costs {cut:.2f} MB less per thread "
-                  f"than the default.")
-            print(f"  {'':10}{base['per_thread_retained_mb']:.2f} -> "
+
+        # "default" and an explicit setting naming the same allocator are the
+        # same allocator; a gap between them is run-to-run noise, not tuning.
+        distinct = {n for n in working if n != "default"}
+        only_one_allocator = distinct <= {"PYTHONMALLOC=mimalloc"} or distinct <= {"PYTHONMALLOC=pymalloc"}
+
+        if only_one_allocator:
+            print("  NOT TUNABLE -- this build supports one allocator and rejects the rest.")
+            print(f"  {'':14}Cost is {base['per_thread_retained_mb']:.2f} MB per thread "
+                  "and there is no other setting to move to.")
+        elif best_name != "default" and cut > 0.5:
+            print(f"  TUNABLE -- '{best_name}' costs {cut:.2f} MB less per thread than default:")
+            print(f"  {'':11}{base['per_thread_retained_mb']:.2f} -> "
                   f"{best['per_thread_retained_mb']:.2f} MB per thread.")
         else:
-            print("  NOT TUNABLE by allocator choice -- every setting lands within "
-                  "0.5 MB per thread.")
-            print("  The cost is the interpreter's per-thread state, not the "
-                  "allocator's arenas.")
+            worst = max(rows, key=lambda r: r[1]["per_thread_retained_mb"])
+            print("  DEFAULT IS BEST -- no setting beats it "
+                  f"({base['per_thread_retained_mb']:.2f} MB per thread; "
+                  f"worst is {worst[0]} at {worst[1]['per_thread_retained_mb']:.2f}).")
+
+    if unsupported:
+        print(f"  Rejected by this build: {', '.join(unsupported)}")
     print()
 
 
