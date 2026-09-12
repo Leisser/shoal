@@ -82,6 +82,54 @@ collapses with it is worthless — the fleet is smaller and does less. Threads
 share memory on *any* build; only a free-threaded build lets them run. CI
 publishes both numbers on every push.
 
+**Case C — throughput.** Do those threads actually do any work?
+
+The verdict normalises against *usable* cores — cgroup quota first, then
+scheduler affinity, then `cpu_count()` — because `os.cpu_count()` reports the
+host's cores, not what a container was granted. The load-bearing number is
+thread/process **parity**: both meet the same hardware ceiling, so their ratio
+isolates the interpreter from the machine.
+
+```console
+$ python bench/collapse.py caseC --n 8
+
+  units=8   python=3.13.1   GIL build
+  usable cores=8 (process_cpu_count)   parallelism ceiling=8x
+
+  mode           speedup   of ceiling
+  serial           1.00x          12%
+  processes        4.64x          58%
+  threads          1.02x          13%
+
+  thread/process parity: 0.22
+  Case C: NOT USABLE -- threads do not parallelise. Expected on a GIL build.
+```
+
+**Scaling sweep.** Where does speedup plateau, and do threads track processes?
+
+```console
+$ python bench/collapse.py sweep --n 8
+
+   units    threads   processes   parity   efficiency
+       1      0.98x       0.98x     1.00          98%
+       2      1.02x       2.00x     0.51          51%  <- plateau
+       4      0.98x       3.25x     0.30          25%  <- plateau
+       8      0.99x       4.46x     0.22          12%  <- plateau
+
+  DOES NOT SCALE -- threads fall behind processes as units increase.
+```
+
+Scaling needs cores. A 2-core hosted runner caps every speedup at ~2x, which
+says nothing about the interpreter — processes hit the same wall. To answer the
+scaling question in CI, point the `scaling` job at a bigger machine:
+
+```console
+gh variable set LARGE_RUNNER --body "ubuntu-latest-8-cores"   # GitHub larger runner
+gh variable set LARGE_RUNNER --body "self-hosted"             # your own
+```
+
+Unset, the job still runs and reports honestly that the ceiling was too low.
+
 ## Install
 
 ```console

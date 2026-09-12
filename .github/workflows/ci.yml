@@ -1,6 +1,16 @@
 name: ci
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sweep_units:
+        description: "Max units for the scaling sweep"
+        default: "16"
+      sweep_work:
+        description: "CPU iterations per sweep point"
+        default: "40000000"
 
 jobs:
   test:
@@ -22,8 +32,7 @@ jobs:
         run: shoal doctor --no-colour
 
   # The thesis is a measurement, so measure it on every push. Case A is memory,
-  # Case C is whether that memory saving is usable. Both are needed; neither
-  # alone decides anything.
+  # Case C is whether that memory saving is usable. Neither alone decides anything.
   collapse:
     runs-on: ubuntu-latest
     strategy:
@@ -36,28 +45,64 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-
-      - name: Case A - memory (PSS, Linux)
-        id: mem
-        run: |
-          python bench/collapse.py caseA --n 32 --settle 3 | tee caseA.txt
-
+      - name: Case A - memory (PSS)
+        run: python bench/collapse.py caseA --n 32 --settle 3 | tee caseA.txt
       - name: Case C - throughput
-        run: |
-          python bench/collapse.py caseC --n 8 --work 40000000 | tee caseC.txt
-
+        run: python bench/collapse.py caseC --n 8 --work 40000000 | tee caseC.txt
       - name: Publish to run summary
         if: always()
         run: |
           {
-            echo "## collapse — python ${{ matrix.python }}"
-            echo '```'
-            cat caseA.txt caseC.txt 2>/dev/null
-            echo '```'
+            echo "## collapse — py${{ matrix.python }} (${{ runner.name }})"
+            echo '```'; cat caseA.txt caseC.txt 2>/dev/null; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: collapse-${{ matrix.python }}
           path: case*.txt
+
+  # Scaling needs cores. A 2-core hosted runner caps every speedup at ~2x, which
+  # tells you nothing about the interpreter -- processes hit the same wall.
+  #
+  # Set the repository variable LARGE_RUNNER to answer the scaling question:
+  #   gh variable set LARGE_RUNNER --body "ubuntu-latest-8-cores"   # GitHub larger runner
+  #   gh variable set LARGE_RUNNER --body "self-hosted"             # your own machine
+  # Left unset it still runs, and honestly reports that the ceiling was too low.
+  scaling:
+    runs-on: ${{ vars.LARGE_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14", "3.14t"]
+    name: scaling py${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Report the machine
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, "bench")
+          from collapse import usable_cores
+          n, why = usable_cores()
+          print(f"usable cores: {n} ({why})")
+          PY
+      - name: Scaling sweep
+        run: |
+          python bench/collapse.py sweep \
+            --n ${{ github.event.inputs.sweep_units || '16' }} \
+            --work ${{ github.event.inputs.sweep_work || '40000000' }} | tee sweep.txt
+      - name: Publish to run summary
+        if: always()
+        run: |
+          {
+            echo "## scaling — py${{ matrix.python }} on ${{ vars.LARGE_RUNNER || 'ubuntu-latest' }}"
+            echo '```'; cat sweep.txt 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scaling-${{ matrix.python }}
+          path: sweep.txt

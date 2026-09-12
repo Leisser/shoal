@@ -235,36 +235,149 @@ def run_serial(total_work: int) -> dict:
     return {"elapsed_s": time.perf_counter() - t0, "units": 1, "work_per_unit": per}
 
 
-def case_c(n: int, total_work: int) -> None:
+def usable_cores() -> tuple[int, str]:
+    """How many cores can this process actually use?
+
+    os.cpu_count() lies in every environment the target audience runs in: it
+    reports the host's cores, not the cgroup quota a container was given. Since
+    the whole point is comparing against a parallelism ceiling, getting this
+    wrong makes every verdict wrong.
+    """
+    limits: list[tuple[int, str]] = []
+
+    # cgroup v2, then v1 -- what a container was actually granted
+    try:
+        quota, period = open("/sys/fs/cgroup/cpu.max").read().split()
+        if quota != "max":
+            limits.append((max(1, int(int(quota) / int(period))), "cgroup v2 quota"))
+    except (OSError, ValueError):
+        pass
+    try:
+        q = int(open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read())
+        per = int(open("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read())
+        if q > 0:
+            limits.append((max(1, q // per), "cgroup v1 quota"))
+    except (OSError, ValueError):
+        pass
+
+    # scheduler affinity -- what this process is pinned to
+    try:
+        limits.append((len(os.sched_getaffinity(0)), "sched affinity"))
+    except (AttributeError, OSError):
+        pass
+
+    pcc = getattr(os, "process_cpu_count", None)     # 3.13+
+    if pcc and pcc():
+        limits.append((pcc(), "process_cpu_count"))
+    if os.cpu_count():
+        limits.append((os.cpu_count(), "cpu_count"))
+
+    if not limits:
+        return 1, "unknown"
+    n, why = min(limits, key=lambda x: x[0])
+    return n, why
+
+
+def _interpreter_state() -> tuple[bool, bool]:
+    """(free-threaded build, GIL currently on)"""
+    import sysconfig
+    ft = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
     gil = getattr(sys, "_is_gil_enabled", lambda: True)()
-    ft = bool(__import__("sysconfig").get_config_var("Py_GIL_DISABLED"))
+    return ft, gil
+
+
+def _measure_pair(n: int, total_work: int) -> tuple[float, float, float]:
+    """(serial_s, thread_speedup, process_speedup)"""
+    serial = run_serial(total_work)["elapsed_s"]
+    t = run_throughput("threads", n, total_work)["elapsed_s"]
+    p = run_throughput("processes", n, total_work)["elapsed_s"]
+    return serial, (serial / t if t else 0.0), (serial / p if p else 0.0)
+
+
+def case_c(n: int, total_work: int) -> None:
+    cores, why = usable_cores()
+    ft, gil = _interpreter_state()
+    build = ("free-threaded, GIL off" if ft and not gil else
+             "free-threaded, GIL ON" if ft else "GIL build")
+    ceiling = min(n, cores)
+
     print(f"\n  units={n}   work={total_work:,} iterations   "
-          f"python={sys.version.split()[0]}   "
-          f"{'free-threaded, GIL off' if ft and not gil else 'GIL build' if not ft else 'free-threaded, GIL ON'}")
+          f"python={sys.version.split()[0]}   {build}")
+    print(f"  usable cores={cores} ({why})   parallelism ceiling={ceiling}x")
+    if cores < n:
+        print(f"  {'':2}note: only {cores} cores available, so speedup cannot exceed "
+              f"{cores}x regardless of interpreter.")
     print()
-    serial = run_serial(total_work)
-    print(f"  {'mode':<12} {'elapsed':>10} {'speedup':>10} {'efficiency':>12}")
-    print("  " + "-" * 48)
-    print(f"  {'serial':<12} {serial['elapsed_s']:9.2f}s {1.0:9.2f}x {'100%':>12}")
 
-    results = {}
-    for mode in ("processes", "threads"):
-        r = run_throughput(mode, n, total_work)
-        speedup = serial["elapsed_s"] / r["elapsed_s"] if r["elapsed_s"] else 0.0
-        eff = speedup / n * 100
-        results[mode] = speedup
-        print(f"  {mode:<12} {r['elapsed_s']:9.2f}s {speedup:9.2f}x {eff:11.0f}%")
-
+    serial, t_up, p_up = _measure_pair(n, total_work)
+    print(f"  {'mode':<12} {'speedup':>9} {'of ceiling':>12}")
+    print("  " + "-" * 37)
+    print(f"  {'serial':<12} {1.0:8.2f}x {100/ceiling:11.0f}%")
+    print(f"  {'processes':<12} {p_up:8.2f}x {p_up/ceiling*100:11.0f}%")
+    print(f"  {'threads':<12} {t_up:8.2f}x {t_up/ceiling*100:11.0f}%")
     print()
-    t = results.get("threads", 0.0)
-    if t >= n * 0.6:
-        v = "USABLE -- threads deliver real parallelism"
-    elif t >= 2.0:
-        v = "PARTIAL -- some parallelism, well short of linear"
+
+    # The load-bearing comparison is threads against processes, not against n.
+    # Both meet the same hardware ceiling, so their ratio is hardware-independent
+    # and isolates the only thing we are actually testing: the interpreter.
+    parity = (t_up / p_up) if p_up else 0.0
+    print(f"  thread/process parity: {parity:.2f}   "
+          f"(1.00 = free-threading matches separate processes)")
+
+    if parity >= 0.85:
+        verdict = "USABLE -- threads match processes, at a fraction of the memory"
+    elif parity >= 0.5:
+        verdict = "DEGRADED -- threads run in parallel but lag processes; suspect contention"
     else:
-        v = ("NOT USABLE -- threads do not parallelise. "
-             + ("Expected on a GIL build." if not ft else "GIL is on: an import re-enabled it."))
-    print(f"  Case C: {t:.2f}x thread speedup on {n} units  ->  {v}")
+        verdict = ("NOT USABLE -- threads do not parallelise. "
+                   + ("Expected on a GIL build." if not ft
+                      else "GIL is ON: an import re-enabled it."))
+    print(f"  Case C: {verdict}")
+    if ceiling < 4:
+        print(f"  {'':10}Ceiling of {ceiling}x is too low to test scaling. "
+              f"Run `sweep` on a larger machine.")
+    print()
+
+
+def sweep(max_n: int, total_work: int) -> None:
+    """Scaling curve: where does speedup plateau, and do threads track processes?"""
+    cores, why = usable_cores()
+    ft, gil = _interpreter_state()
+    build = ("free-threaded, GIL off" if ft and not gil else
+             "free-threaded, GIL ON" if ft else "GIL build")
+    print(f"\n  scaling sweep   python={sys.version.split()[0]}   {build}")
+    print(f"  usable cores={cores} ({why})   work={total_work:,} iterations per point")
+    print()
+    print(f"  {'units':>6} {'threads':>10} {'processes':>11} {'parity':>8} {'efficiency':>12}")
+    print("  " + "-" * 52)
+
+    ns, curve = [], []
+    k = 1
+    while k <= max_n:
+        ns.append(k)
+        k *= 2
+    if ns[-1] != max_n:
+        ns.append(max_n)
+
+    for k in ns:
+        _, t_up, p_up = _measure_pair(k, total_work)
+        parity = (t_up / p_up) if p_up else 0.0
+        eff = t_up / min(k, cores) * 100
+        curve.append((k, t_up, parity))
+        flag = "  <- plateau" if len(curve) > 1 and t_up < curve[-2][1] * 1.15 else ""
+        print(f"  {k:6d} {t_up:9.2f}x {p_up:10.2f}x {parity:8.2f} {eff:11.0f}%{flag}")
+
+    print()
+    best_n, best_up, _ = max(curve, key=lambda c: c[1])
+    mean_parity = sum(c[2] for c in curve) / len(curve)
+    print(f"  peak thread speedup {best_up:.2f}x at {best_n} units; "
+          f"mean parity {mean_parity:.2f}")
+    if mean_parity >= 0.85 and best_up >= cores * 0.7:
+        print("  SCALES -- threads track processes up to the core count.")
+    elif mean_parity >= 0.85:
+        print("  PARITY BUT LIMITED -- threads match processes, both below the core count.")
+    else:
+        print("  DOES NOT SCALE -- threads fall behind processes as units increase.")
     print()
 
 
@@ -335,7 +448,8 @@ def main() -> None:
         return
 
     ap = argparse.ArgumentParser(description="Fleet-collapse measurement harness")
-    ap.add_argument("case", choices=["all", "caseA", "caseB", "caseC", "throughput", *RUNNERS])
+    ap.add_argument("case", choices=["all", "caseA", "caseB", "caseC", "throughput",
+                                     "sweep", *RUNNERS])
     ap.add_argument("--n", type=int, default=32, help="units of work (default 32)")
     ap.add_argument("--imports", default="", help="comma-separated modules, e.g. numpy,pandas")
     ap.add_argument("--settle", type=float, default=3.0, help="seconds before measuring")
@@ -347,6 +461,9 @@ def main() -> None:
 
     if a.case in ("caseC", "throughput"):
         case_c(a.n, a.work)          # timing is trustworthy on any platform
+        return
+    if a.case == "sweep":
+        sweep(a.n, a.work)
         return
 
     if not LINUX and not a.force:
