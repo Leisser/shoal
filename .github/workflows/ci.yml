@@ -59,12 +59,14 @@ jobs:
         run: python bench/collapse.py caseA --n 32 --settle 3 | tee caseA.txt
       - name: Case C - throughput
         run: python bench/collapse.py caseC --n 8 --work 40000000 | tee caseC.txt
+      - name: Case D - a real app under load
+        run: python bench/realapp.py compare --n 8 --requests 6000 --concurrency 8 | tee caseD.txt
       - name: Publish to run summary
         if: always()
         run: |
           {
             echo "## collapse — py${{ matrix.python }} (${{ runner.name }})"
-            echo '```'; cat caseA.txt caseC.txt 2>/dev/null; echo '```'
+            echo '```'; cat caseA.txt caseC.txt caseD.txt 2>/dev/null; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
