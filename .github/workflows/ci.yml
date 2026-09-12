@@ -50,6 +50,9 @@ jobs:
       matrix:
         python: ["3.14", "3.14t"]
     name: collapse py${{ matrix.python }}
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

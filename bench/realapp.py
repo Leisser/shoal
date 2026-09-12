@@ -207,13 +207,17 @@ def measure(mode: str, n: int, requests: int, concurrency: int) -> dict:
         idle_pss, idle_rss = tree_memory(proc.pid)
 
         import threading
-        peak = {"pss": 0, "rss": 0}
+        # Seed from the idle reading: a load short enough to finish between two
+        # samples would otherwise report zero and look like a perfect result.
+        peak = {"pss": idle_pss, "rss": idle_rss}
         stop = threading.Event()
 
         def sampler():
-            while not stop.wait(0.15):
+            while True:
                 p, r = tree_memory(proc.pid)
                 peak["pss"], peak["rss"] = max(peak["pss"], p), max(peak["rss"], r)
+                if stop.wait(0.1):
+                    return
 
         t = threading.Thread(target=sampler, daemon=True)
         t.start()
@@ -289,9 +293,17 @@ def sweep(max_n: int, requests: int, concurrency: int) -> None:
 
     best = None
     for k in ns:
-        pr = measure("processes", k, requests, min(concurrency, max(k, 2)))
-        th = measure("threads", k, requests, min(concurrency, max(k, 2)))
+        conc = max(concurrency, k)          # never starve the workers we asked for
+        try:
+            pr = measure("processes", k, requests, conc)
+            th = measure("threads", k, requests, conc)
+        except Exception as e:
+            print(f"  {k:4d}   failed: {type(e).__name__}: {e}")
+            continue
         pm, tm = pr[key] / 1024, th[key] / 1024
+        if pm <= 0 or tm <= 0:
+            print(f"  {k:4d}   no memory reading (pss/rss unavailable here)")
+            continue
         cut = (1 - tm / pm) * 100 if pm else 0
         ratio = (th["rps"] / pr["rps"]) if pr["rps"] else 0
         mark = ""
