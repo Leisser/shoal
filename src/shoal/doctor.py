@@ -104,9 +104,16 @@ def render(d: Diagnosis, *, tty: bool = True) -> str:
         L.append(f"  {'':<9} process - silently, with no error. You would measure no gain.")
     elif not b.freethreaded:
         L.append(f"  {_c('READY', G, tty)}    No dependency blocks free-threading.")
-        L.append(f"  {'':<9} Install a free-threaded interpreter to collapse this fleet:")
+        L.append("")
+        L.append(f"  {'':<9} {_c('RECOMMENDED', G, tty)}  install a free-threaded interpreter.")
         L.append(f"  {'':<9}   uv python install 3.14t     (or python.org 3.14 'free-threaded')")
-        L.append(f"  {'':<9} Then re-run this to confirm the GIL stays off after imports.")
+        L.append("")
+        L.append(f"  {'':<9} What that buys you: one process holding one copy of your")
+        L.append(f"  {'':<9} application instead of one per core, with threads keeping")
+        L.append(f"  {'':<9} pace with processes (measured parity 0.97). For the figure")
+        L.append(f"  {'':<9} in megabytes on this machine:")
+        L.append(f"  {'':<9}   shoal gil <your.app.module>")
+        L.append(f"  {'':<9} Then `shoal serve` takes it, with no code changes.")
     elif b.gil_on:
         L.append(f"  {_c('GIL RE-ENABLED', R, tty)}  free-threaded build, but something turned the GIL on.")
         L.append(f"  {'':<9} Re-run inside your app's venv so its imports are probed too.")

@@ -25,12 +25,14 @@ def _doctor(args: argparse.Namespace) -> int:
 def _gil(args: argparse.Namespace) -> int:
     from .gil import inspect_target, render
 
+    from .serve import usable_cores
+    cores, _ = usable_cores()
     report = inspect_target(args.target)
     if args.json:
         import dataclasses, json
         print(json.dumps(dataclasses.asdict(report), indent=2))
     else:
-        sys.stdout.write(render(report, args.target,
+        sys.stdout.write(render(report, args.target, cores=cores,
                                 tty=sys.stdout.isatty() and not args.no_colour))
     return 1 if report.curable else 0
 

@@ -104,3 +104,63 @@ def test_render_surfaces_an_import_failure():
 def test_render_has_no_escape_codes_without_a_tty():
     out = render(GilReport(True, True, culprits=["x"]), "myapp", tty=False)
     assert "\033[" not in out
+
+
+# ------------------------------------------------------- the prize, and advice
+
+def test_estimate_scales_with_cores():
+    from shoal.gil import estimate
+
+    pz = estimate(rss_mb=250.0, cores=16)
+    assert pz.today_mb == 250.0 * 16
+    assert pz.collapsed_mb < 251.0, "one copy plus thread stacks, not sixteen copies"
+    assert 90 < pz.saved_pct < 100
+
+
+def test_estimate_declines_to_guess_without_a_measurement():
+    from shoal.gil import estimate
+
+    assert estimate(0.0, 8) is None
+    assert estimate(250.0, 0) is None
+
+
+def test_single_core_saves_nothing_and_says_so():
+    from shoal.gil import estimate
+
+    pz = estimate(rss_mb=250.0, cores=1)
+    assert pz.saved_mb == 0.0, "one process collapsed to one process is not a saving"
+
+
+def test_render_recommends_replacing_the_dependency_first():
+    out = render(GilReport(True, True, culprits=["psycopg2._psycopg"], rss_mb=248.0),
+                 "myapp", tty=False, cores=16)
+    assert "RECOMMENDED" in out
+    assert out.index("RECOMMENDED") < out.index("force-gil-off"), \
+        "the safe cure must be presented before the risky one"
+    assert "no caveat attached" in out
+
+
+def test_render_quantifies_what_the_user_gets():
+    out = render(GilReport(True, True, culprits=["x"], rss_mb=248.0),
+                 "myapp", tty=False, cores=16)
+    assert "What you get" in out
+    assert "3,968 MB" in out, "today: 16 copies"
+    assert "94%" in out
+    assert "working set does not collapse" in out, "the estimate must state its limits"
+
+
+def test_render_omits_the_prize_when_it_cannot_measure():
+    out = render(GilReport(True, True, culprits=["x"], rss_mb=0.0),
+                 "myapp", tty=False, cores=16)
+    assert "What you get" not in out, "no invented numbers"
+
+
+def test_override_is_framed_as_a_bridge_not_a_destination():
+    out = render(GilReport(True, True, culprits=["x"], rss_mb=100.0),
+                 "myapp", tty=False, cores=8)
+    assert "bridge" in out and "silent" in out
+
+
+def test_clean_report_points_at_the_next_step():
+    out = render(GilReport(True, False, rss_mb=100.0), "myapp", tty=False, cores=8)
+    assert "CLEAN" in out and "shoal serve" in out

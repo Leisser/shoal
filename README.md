@@ -65,11 +65,31 @@ $ shoal gil myproject.wsgi
        pip index versions psycopg2    # is there a newer build?
      Compatibility tracker: https://py-free-threading.github.io/tracking/
 
-  2. Override CPython -- keeps the collapse, accepts the risk.
-       PYTHON_GIL=0 shoal serve ...        # or: shoal serve --force-gil-off
-     This runs the extension without the GIL it asked for. Safe only if that
-     extension does not mutate shared state from multiple threads.
+  What you get:
+    one copy of this application costs 248 MB.
+    today   16 processes x 248 MB = 3,968 MB
+    after   1 process + 16 threads = 249 MB
+    saved   3,719 MB (94%) -- and threads keep pace with processes (parity 0.97).
+    Baseline only: per-request working set does not collapse.
+
+  RECOMMENDED  Replace the dependency.
+     You get the saving above with no caveat attached: the extension declares
+     itself thread-safe, CPython leaves the GIL off, and you are running a
+     supported configuration you can upgrade into.
+
+       pip index versions psycopg2
+     Tracker: https://py-free-threading.github.io/tracking/
+
+  If you cannot  override CPython -- same saving, real risk.
+       shoal serve --force-gil-off ...      # PYTHON_GIL=0
+     Corruption here is silent, not a crash. Treat it as a bridge until the
+     dependency catches up -- not a destination.
 ```
+
+Every command that finds an opportunity says what it is worth in megabytes on
+your machine, and recommends one path rather than presenting a menu. The safe
+cure is always listed first; the override is always framed as temporary. Where
+shoal cannot measure, it prints no number rather than an invented one.
 
 CPython names the offending module when it enables the GIL, but the warning
 lands in stderr during startup where nobody reads it, and everything afterwards

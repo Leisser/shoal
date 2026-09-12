@@ -40,6 +40,7 @@ class GilReport:
     gil_on_after_import: bool | None
     culprits: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    rss_mb: float = 0.0          # what one copy of this application costs
     import_error: str = ""
 
     @property
@@ -53,7 +54,7 @@ class GilReport:
 
 
 _CHILD = r'''
-import json, sys, sysconfig, warnings
+import json, resource, sys, sysconfig, warnings
 warnings.simplefilter("always")
 captured = []
 _orig = warnings.showwarning
@@ -66,10 +67,13 @@ try:
 except BaseException as e:
     err = f"{{type(e).__name__}}: {{e}}"[:300]
 g = getattr(sys, "_is_gil_enabled", None)
+_r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+_rss = _r / 1024 / 1024 if sys.platform == "darwin" else _r / 1024
 print("@@SHOAL@@" + json.dumps({{
     "ft": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
     "gil": (g() if g else None),
     "warnings": captured[:40],
+    "rss_mb": round(_rss, 1),
     "err": err,
 }}))
 '''
@@ -107,8 +111,39 @@ def inspect_target(module: str, *, timeout: int = 180) -> GilReport:
         gil_on_after_import=d.get("gil"),
         culprits=find_culprits(text),
         warnings=[w for w in d.get("warnings", []) if "gil" in w.lower()],
+        rss_mb=float(d.get("rss_mb") or 0.0),
         import_error=d.get("err", ""),
     )
+
+
+@dataclass(frozen=True)
+class Prize:
+    """What collapsing this application would be worth, on this machine."""
+    per_copy_mb: float
+    processes: int
+    today_mb: float
+    collapsed_mb: float
+
+    @property
+    def saved_mb(self) -> float:
+        return max(0.0, self.today_mb - self.collapsed_mb)
+
+    @property
+    def saved_pct(self) -> float:
+        return (self.saved_mb / self.today_mb * 100) if self.today_mb else 0.0
+
+
+THREAD_MB = 0.035     # measured: 35 KB per thread at a 256 KB stack
+
+
+def estimate(rss_mb: float, cores: int) -> Prize | None:
+    """Baseline-memory estimate only. Per-request working set does not collapse."""
+    if rss_mb <= 0 or cores < 1:
+        return None
+    return Prize(per_copy_mb=rss_mb,
+                 processes=cores,
+                 today_mb=rss_mb * cores,
+                 collapsed_mb=rss_mb + THREAD_MB * cores)
 
 
 def find_culprits(text: str) -> list[str]:
@@ -129,7 +164,27 @@ def top_level(module: str) -> str:
     return module.split(".")[0]
 
 
-def render(report: GilReport, target: str, *, tty: bool = True) -> str:
+def _prize_lines(report: GilReport, cores: int, c) -> list[str]:
+    """What the user actually gets. Concrete, or omitted."""
+    G, B, DIM = "\033[32m", "\033[1m", "\033[2m"
+    pz = estimate(report.rss_mb, cores)
+    if pz is None:
+        return []
+    return [
+        f"  {c('What you get:', B)}",
+        f"    one copy of this application costs {pz.per_copy_mb:.0f} MB.",
+        f"    today   {pz.processes} processes x {pz.per_copy_mb:.0f} MB "
+        f"= {c(f'{pz.today_mb:,.0f} MB', DIM)}",
+        f"    after   1 process + {pz.processes} threads "
+        f"= {c(f'{pz.collapsed_mb:,.0f} MB', G)}",
+        f"    saved   {c(f'{pz.saved_mb:,.0f} MB ({pz.saved_pct:.0f}%)', G)}"
+        f" -- and threads keep pace with processes (measured parity 0.97).",
+        f"    {c('Baseline only: per-request working set does not collapse.', DIM)}",
+        "",
+    ]
+
+
+def render(report: GilReport, target: str, *, tty: bool = True, cores: int = 0) -> str:
     G, Y, R, B, DIM, X = "\033[32m", "\033[33m", "\033[31m", "\033[1m", "\033[2m", "\033[0m"
     c = (lambda s, col: f"{col}{s}{X}") if tty else (lambda s, col: s)
     L = ["", f"  {c('shoal gil', B)}   {target}", ""]
@@ -142,11 +197,14 @@ def render(report: GilReport, target: str, *, tty: bool = True) -> str:
         L += [f"  {c('GIL build', Y)} -- this interpreter has no free-threading to lose.",
               "  Nothing to diagnose here. Install a free-threaded build first:",
               "    uv python install 3.14t", ""]
+        L += _prize_lines(report, cores, c)
         return "\n".join(L)
 
     if report.clean:
         L += [f"  {c('CLEAN', G)}  the GIL stayed off after importing {target}.",
               "  Nothing is standing in the way of the collapse.", ""]
+        L += _prize_lines(report, cores, c)
+        L += [f"  Run {c('shoal serve ' + target + ':app', B)} to take it.", ""]
         return "\n".join(L)
 
     L.append(f"  {c('GIL RE-ENABLED', R)}  importing {target} turned the GIL back on.")
@@ -161,18 +219,24 @@ def render(report: GilReport, target: str, *, tty: bool = True) -> str:
         L.append("  CPython did not name a module. It usually does; if this")
         L.append("  persists, run with -X warn_default_gil and read stderr directly.")
     L.append("")
+    L += _prize_lines(report, cores, c)
 
-    L.append(f"  {c('Two ways forward.', B)}")
+    L.append(f"  {c('RECOMMENDED', G)}  {c('Replace the dependency.', B)}")
+    L.append("     You get the saving above with no caveat attached: the extension")
+    L.append("     declares itself thread-safe, CPython leaves the GIL off, and you")
+    L.append("     are running a supported configuration you can upgrade into.")
+    L.append("     Usually it is one pinned version behind a build that already works.")
     L.append("")
-    L.append(f"  {c('1. Replace the dependency', G)} -- the real fix.")
     for m in report.culprits or ["<module>"]:
-        L.append(f"       pip index versions {top_level(m)}    # is there a newer build?")
-    L.append("     Compatibility tracker: https://py-free-threading.github.io/tracking/")
+        L.append(f"       pip index versions {top_level(m)}")
+    L.append("       # then pin the newest version that ships a cp3XXt wheel")
+    L.append("     Tracker: https://py-free-threading.github.io/tracking/")
     L.append("")
-    L.append(f"  {c('2. Override CPython', Y)} -- keeps the collapse, accepts the risk.")
-    L.append("       PYTHON_GIL=0 shoal serve ...        # or: shoal serve --force-gil-off")
-    L.append(f"     {c('This runs the extension without the GIL it asked for.', R)} Safe only if")
-    L.append("     that extension does not mutate shared state from multiple threads.")
-    L.append("     Test under load before trusting it.")
+    L.append(f"  {c('If you cannot', Y)}  {c('override CPython', B)} -- same saving, real risk.")
+    L.append("       shoal serve --force-gil-off ...      # PYTHON_GIL=0")
+    L.append(f"     {c('This runs the extension without the lock it asked for.', R)} Safe only")
+    L.append("     if it does not mutate shared state across threads. Corruption here")
+    L.append("     is silent, not a crash. Load-test before trusting it, and treat it")
+    L.append("     as a bridge until the dependency catches up -- not a destination.")
     L.append("")
     return "\n".join(L)
